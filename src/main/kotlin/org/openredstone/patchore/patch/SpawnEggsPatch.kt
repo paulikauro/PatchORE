@@ -1,28 +1,26 @@
 package org.openredstone.patchore.patch
 
+import de.tr7zw.nbtapi.NBT
 import de.tr7zw.nbtapi.NBTType
-import org.bukkit.Material
+import de.tr7zw.nbtapi.iface.ReadableNBT
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import org.bukkit.event.block.Action
 import org.bukkit.event.block.BlockDispenseEvent
 import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.inventory.ItemStack
+import org.bukkit.inventory.meta.SpawnEggMeta
 import org.openredstone.patchore.PatchORE
-import de.tr7zw.nbtapi.NBTItem
 import org.openredstone.patchore.sendInfo
 
-class SpawnEggsPatch() : Listener {
-
-    private val eggTypes: List<Material> = Material.entries.filter { it.key.key.endsWith("_egg") }
-
+class SpawnEggsPatch : Listener {
     @EventHandler
     fun onSpawnEggDispense(event: BlockDispenseEvent) {
-        if (!eggTypes.contains(event.item.type)) {
+        if (!event.item.isSpawnEgg) {
             return
         }
 
-        if (hasLegalTags(event.item)) {
+        if (isLegal(event.item)) {
             return
         }
 
@@ -36,11 +34,11 @@ class SpawnEggsPatch() : Listener {
         }
 
         val item = event.item ?: return
-        if (!eggTypes.contains(item.type)) {
+        if (!item.isSpawnEgg) {
             return
         }
 
-        if (hasLegalTags(item)) {
+        if (isLegal(item)) {
             return
         }
 
@@ -49,63 +47,50 @@ class SpawnEggsPatch() : Listener {
         event.isCancelled = true
         val replacement = ItemStack(item.type)
 
-        if (eggTypes.contains(event.player.inventory.itemInMainHand.type)) {
+        if (event.player.inventory.itemInMainHand.isSpawnEgg) {
             event.player.inventory.setItemInMainHand(replacement)
         } else {
             event.player.inventory.setItemInOffHand(replacement)
         }
     }
 
-    private fun hasLegalTags(item: ItemStack): Boolean {
-        val nbti = NBTItem(item)
+    private fun isLegal(item: ItemStack): Boolean = NBT.getComponents<Boolean>(item) { nbt ->
+        val entityCompound = nbt.getCompound("minecraft:entity_data") ?: return@getComponents true
+        val entityId = entityCompound.get<String>("id")?.removePrefix("minecraft:") ?: return@getComponents false
+        val entitySection =
+            PatchORE.config.getConfigurationSection("spawneggs.entity.$entityId") ?: return@getComponents false
+        if (entitySection.getBoolean("block", false)) return@getComponents false
 
-        if (!nbti.hasKey("EntityTag")) {
-            return true
-        }
+        for (subKey in entitySection.getKeys(false)) {
+            val formattedKey = getCamelCase(subKey)
 
-        val configurationSection = PatchORE.config.getConfigurationSection("spawneggs.entity") ?: return true
-        val keys = configurationSection.getKeys(false)
-        val entityCompound = nbti.getCompound("EntityTag") ?: return true
-
-        for (key in keys) {
-            if (entityCompound.hasKey("id") && entityCompound.getString("id") == "minecraft:$key") {
-                if (configurationSection.getBoolean("$key.block")) {
-                    return false
-                }
-
-                val entitySection = configurationSection.getConfigurationSection(key) ?: continue
-                for (subKey in entitySection.getKeys(false)) {
-                    val formattedKey = getCamelCase(subKey)
-                    if (!entityCompound.hasKey(formattedKey)) {
-                        continue
-                    }
-
-                    when (entityCompound.getType(formattedKey)) {
-                        NBTType.NBTTagInt -> {
-                            val value = entityCompound.getInteger(formattedKey)
-                            if (value > configurationSection.getInt("$key.$subKey")) {
-                                return false
-                            }
-                        }
-
-                        NBTType.NBTTagString -> {
-                            val value = entityCompound.getString(formattedKey)
-                            if (value == configurationSection.getString("$key.$subKey")) {
-                                return false
-                            }
-                        }
-
-                        else -> {}
+            when (entityCompound.getType(formattedKey)) {
+                NBTType.NBTTagInt -> {
+                    val value = entityCompound.getInteger(formattedKey)
+                    if (value > entitySection.getInt(subKey)) {
+                        return@getComponents false
                     }
                 }
+
+                NBTType.NBTTagString -> {
+                    val value = entityCompound.getString(formattedKey)
+                    if (value == entitySection.getString(subKey)) {
+                        return@getComponents false
+                    }
+                }
+
+                else -> {}
             }
         }
-
-        return true
+        true
     }
+
+    private inline fun <reified T> ReadableNBT.get(key: String): T? = getOrNull(key, T::class.java)
 
     private fun getCamelCase(underScore: String): String {
         val camel = Regex("_(.)").replace(underScore) { it.groupValues[1].uppercase() }
         return camel.replaceFirstChar { it.uppercase() }
     }
+
+    private val ItemStack.isSpawnEgg get() = hasItemMeta() && itemMeta is SpawnEggMeta
 }
